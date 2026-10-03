@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Dino Runner</title>
+<meta name="description" content="Dino Runner - offline endless runner with rain, hills and sunny morning sky.">
+<meta name="theme-color" content="#8fb6cf">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="favicon-64.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root { --bg:#f7f7f7; --ink:#1a1a1a; --panel:#ffffff; --line:#d9d9d9; }
+  body.dark { --bg:#0d1117; --ink:#e6edf3; --panel:#161b22; --line:#30363d; }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body {
+    height:100%; background:var(--bg); color:var(--ink);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:10px; padding:10px; overflow:hidden; touch-action:none;
+    font-family:'Courier New', ui-monospace, monospace;
+    transition:background .35s, color .35s;
+  }
+  .stage {
+    position:relative; border-radius:14px; overflow:hidden;
+    width:min(99vw, 1180px);
+    border:2px solid var(--line); background:var(--panel);
+    box-shadow:0 10px 40px rgba(0,0,0,.12);
+    transition:background .35s, border-color .35s;
+  }
+  canvas { display:block; width:100%; height:auto; image-rendering:pixelated; }
+  .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:center; }
+  button {
+    font-family:inherit; font-size:13px; letter-spacing:1px; cursor:pointer;
+    padding:9px 14px; border-radius:8px; border:1px solid var(--line);
+    background:var(--panel); color:var(--ink); transition:.18s;
+  }
+  button:hover { border-color:var(--ink); transform:translateY(-1px); }
+  button:active { transform:translateY(1px); }
+  .hint { font-size:12px; opacity:.55; letter-spacing:1px; text-align:center; }
+  .pad { display:none; gap:10px; width:min(99vw,1180px); }
+  .pad button { flex:1; padding:16px; font-size:15px; }
+  @media (pointer: coarse) { .pad { display:flex; } }
+  #btnInstall { border-color:#2f9e5f; color:#2f9e5f; font-weight:bold; }
+  #btnInstall.ready { background:#2f9e5f; color:#fff; }
+  .sheet {
+    position:fixed; inset:0; background:rgba(0,0,0,.62); z-index:50;
+    display:none; align-items:center; justify-content:center; padding:20px;
+  }
+  .sheet.show { display:flex; }
+  .card {
+    max-width:420px; width:100%; background:var(--panel); color:var(--ink);
+    border:2px solid var(--line); border-radius:14px; padding:18px; line-height:1.7;
+    font-size:13px; letter-spacing:.4px;
+  }
+  .card h4 { font-size:16px; letter-spacing:1px; margin-bottom:8px; }
+  .card ol { margin:0 0 12px 18px; }
+  .card li { margin:4px 0; }
+  .card b { color:#2f9e5f; }
+  .card button { width:100%; margin-top:4px; }
+  @media (display-mode: standalone) {
+    body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  }
+</style>
+</head>
+<body>
+  <div class="stage"><canvas id="game" width="1000" height="340"></canvas></div>
+  <div class="bar">
+    <button id="btnStart">START / RESTART</button>
+    <button id="btnPause">PAUSE</button>
+    <button id="btnSound">SOUND: ON</button>
+    <button id="btnTheme">THEME: LIGHT</button>
+    <button id="btnInstall">+ INSTALL APP</button>
+  </div>
+  <div class="pad">
+    <button id="padDuck">DUCK</button>
+    <button id="padJump">JUMP</button>
+  </div>
+  <div class="hint">SPACE / &uarr; / CLICK = JUMP &nbsp;&middot;&nbsp; &darr; = DUCK &nbsp;&middot;&nbsp; P = PAUSE</div>
+
+  <div class="sheet" id="sheet">
+    <div class="card">
+      <h4>PHONE MEIN GAME INSTALL KAREIN</h4>
+      <ol>
+        <li>Chrome ka <b>menu (⋮)</b> dabayein (top right)</li>
+        <li><b>"Add to Home screen"</b> ya <b>"Install app"</b> chunein</li>
+        <li><b>Install / Add</b> par confirm karein</li>
+      </ol>
+      Ab game home screen par icon ban jayega aur <b> bina internet ke </b> chalega.
+      <button id="sheetClose">OK, BAND KARO</button>
+    </div>
+  </div>
+
+<script>
+(() => {
+'use strict';
+
+// ---------- Canvas ----------
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const GROUND_Y = 268;
+const SCALE = 4;
+
+// ---------- Persistence ----------
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+};
+let best = store.get('dino.best', 0);
+let soundOn = store.get('dino.sound', true);
+let themeDark = store.get('dino.dark', false);
+
+// ---------- Audio ----------
+let ac = null;
+function beep(freq, dur, type = 'square', vol = 0.05) {
+  if (!soundOn) return;
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    if (ac.state === 'suspended') ac.resume();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(vol, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + dur);
+    o.connect(g).connect(ac.destination);
+    o.start(); o.stop(ac.currentTime + dur);
+  } catch (e) {}
+}
+const sfx = {
+  jump:  () => beep(420, 0.12, 'square', 0.045),
+  duck:  () => beep(220, 0.08, 'sawtooth', 0.03),
+  crash: () => { beep(160, 0.35, 'sawtooth', 0.06); setTimeout(() => beep(90, 0.4, 'sawtooth', 0.05), 90); },
+  score: () => beep(880, 0.07, 'square', 0.035),
+  start: () => beep(660, 0.09, 'square', 0.04)
+};
+
+// ---------- Sprites ----------
+const S = {
+  idle: [
+    "                    ",
+    "                    ",
+    "        ##          ",
+    "        ###         ",
+    "        ###         ",
+    "        ###  ##     ",
+    "        ###  ###    ",
+    "        ###  ###  # ",
+    "##      ###  ##  # ",
+    "###     ###  ##    ",
+    " ###  ## ######    ",
+    "  ####### #####    ",
+    "   ##   ##  ###    ",
+    "       ##   ###    ",
+    "      ###   ##     ",
+    "      ##    ##     ",
+    "                  "
+  ],
+  jump: [
+    "                    ",
+    "                    ",
+    "        ##          ",
+    "        ###         ",
+    "        ###         ",
+    "        ###  ##     ",
+    "        ###  ###    ",
+    "        ###  ###  # ",
+    "##      ###  ##  # ",
+    "###     ###  ##    ",
+    " ###  ## ######    ",
+    "  ####### #####    ",
+    "   ##   ##  ###    ",
+    "   ##  ### ##     ",
+    "       ##  ##     ",
+    "      ###  ##     ",
+    "      ##   ##     ",
+    "     ##          "
+  ],
+  duck: [
+    "                    ",
+    "                    ",
+    "                    ",
+    "                    ",
+    "                    ",
+    "                    ",
+    "      ##            ",
+    "      ###           ",
+    "      ###  ##       ",
+    "##    ###  ###  #   ",
+    "###   ###  ###  #   ",
+    " ###  ###  ##  #   ",
+    "  ##### ##  ###    ",
+    "  ##  #### #####   ",
+    "      ##    ###    ",
+    "     ###    ##     ",
+    "                    ",
+    "                    "
+  ],
+  cactus1: [
+    "     #   ",
+    "     #   ",
+    " #   #   # ",
+    " #   #   # ",
+    " #   #   # ",
+    "### # # ### ",
+    "########### ",
+    "########### ",
+    "########### ",
+    "########### "
+  ],
+  cactus2: [
+    "     #    ",
+    "     #    ",
+    "     #    ",
+    " #   #  # ",
+    " #   #  # ",
+    "### # # ## ",
+    "########### ",
+    "########### ",
+    "########### ",
+    "########### ",
+    "########### ",
+    "########### ",
+    "########### ",
+    "########### "
+  ],
+  cactus3: [
+    "#    #     #",
+    "#    #     #",
+    "#  # #  #  #",
+    "#  # #  #  #",
+    "#  # #  #  #",
+    "## # # ## ##",
+    "############",
+    "############",
+    "############",
+    "############",
+    "############"
+  ],
+  bird1: [
+    "       ",
+    "  ###  ",
+    " ##### ",
+    "#######",
+    "## ### ",
+    "##  # ",
+    "     # ",
+    "       "
+  ],
+  bird2: [
+    "       ",
+    "   #   ",
+    " ##### ",
+    "#######",
+    "## ### ",
+    " ##  # ",
+    "     # ",
+    "       "
+  ],
+  cloud: [
+    "    ###  ",
+    "  ####### ",
+    "#########",
+    "#########"
+  ]
+};
+const flip = sp => sp.map(r => r.split('').reverse().join(''));
+
+function drawSprite(sp, x, y, s = SCALE, color = null) {
+  if (color) ctx.fillStyle = color;
+  const ox = Math.round(x), oy = Math.round(y);
+  for (let r = 0; r < sp.length; r++) {
+    const row = sp[r];
+    for (let c = 0; c < row.length; c++) if (row[c] === '#') ctx.fillRect(ox + c * s, oy + r * s, s, s);
+  }
+}
+const BLACK = '#101010';
+const sw = (sp, s = SCALE) => sp[0].length * s;
+const sh = (sp, s = SCALE) => sp.length * s;
+
+// ---------- Parallax hills + rain ----------
+function mulberry(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+const TILE = 600;
+function makeHills(seed, minH, maxH, n) {
+  const rnd = mulberry(seed);
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const h = i % 2 === 0
+      ? maxH * (0.55 + rnd() * 0.45)
+      : minH * (0.55 + rnd() * 0.9);
+    pts.push({ x: i * (TILE / n), y: GROUND_Y - h });
+  }
+  pts[n].y = pts[0].y;
+  return pts;
+}
+const HILL_FAR  = makeHills(1337,  44, 116, 6);
+const HILL_MID  = makeHills(4242,  24,  68, 8);
+const HILL_NEAR = makeHills(90210, 12,  42, 10);
+
+function drawHills(pts, offset, fill) {
+  ctx.fillStyle = fill;
+  ctx.beginPath();
+  ctx.moveTo(-offset, GROUND_Y);
+  ctx.lineTo(pts[0].x - offset, pts[0].y);
+  for (let i = 1; i < pts.length; i++) {
+    const p = pts[i], q = pts[i - 1];
+    ctx.quadraticCurveTo((q.x + p.x) / 2 - offset, q.y, p.x - offset, p.y);
+  }
+  ctx.lineTo(TILE - offset, GROUND_Y);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(TILE - offset, GROUND_Y);
+  ctx.lineTo(pts[0].x - offset + TILE, pts[0].y);
+  for (let i = 1; i < pts.length; i++) {
+    const p = pts[i], q = pts[i - 1];
+    ctx.quadraticCurveTo((q.x + p.x) / 2 - offset + TILE, q.y, p.x - offset + TILE, p.y);
+  }
+  ctx.lineTo(TILE * 2 - offset, GROUND_Y);
+  ctx.closePath();
+  ctx.fill();
+}
+
+let rain;
+function makeRain() {
+  const mk = (n, sp, len, wid) => Array.from({ length: n }, () => ({
+    x: Math.random() * (W + 80) - 40,
+    y: Math.random() * H,
+    v: sp * (0.75 + Math.random() * 0.5),
+    len: len * (0.6 + Math.random() * 0.8),
+    w: wid * (0.7 + Math.random() * 0.6)
+  }));
+  return { far: mk(70, 7, 9, 1), near: mk(38, 15, 17, 2) };
+}
+function stepRain(dt) {
+  for (const k of ['far', 'near']) for (const d of rain[k]) {
+    d.y += d.v * dt;
+    d.x -= d.v * dt * 0.22;
+    if (d.y > H) { d.y = -20 - Math.random() * 40; d.x = Math.random() * (W + 80) - 40; }
+    if (d.x < -45) d.x = W + 40;
+  }
+}
+function drawRain(layer, alpha, color) {
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  for (const d of rain[layer]) ctx.fillRect(d.x, d.y, d.w, d.len);
+  ctx.globalAlpha = 1;
+}
+
+// ---------- State ----------
+let dino, obstacles, clouds, particles, state, score, distance, speed, frame, lastMilestone;
+
+function reset(full = true) {
+  dino = { x: 70, y: GROUND_Y - sh(S.idle), vy: 0, h: sh(S.idle), onGround: true, ducking: false, blink: 0 };
+  obstacles = [];
+  particles = [];
+  clouds = Array.from({ length: 4 }, makeCloud);
+  rain = makeRain();
+  score = 0; distance = 0; speed = 6.5; frame = 0; lastMilestone = 0;
+  state = 'playing';
+  if (sfx) sfx.start();
+}
+
+function makeCloud() {
+  return { sp: S.cloud, x: Math.random() * W, y: 18 + Math.random() * 80, s: Math.random() < 0.4 ? 2 : 3, v: 0.25 + Math.random() * 0.6 };
+}
+
+// ---------- Obstacles ----------
+function makeObstacle() {
+  const r = Math.random();
+  if (distance > 300 && r < 0.22) {
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    const sp = dir === 1 ? S.bird1 : flip(S.bird1);
+    const tier = Math.floor(Math.random() * 3);
+    const y = [GROUND_Y - 132, GROUND_Y - 96, GROUND_Y - 60][tier];
+    return { sp, x: W + 40, y, w: sw(sp), h: sh(sp), vy: tier === 1 ? 0 : (Math.random() < 0.5 ? 1.1 : -1.1), mul: 1.3, bird: true };
+  }
+  const sps = r < 0.45 ? [S.cactus1] : r < 0.78 ? [S.cactus2] : [S.cactus3, S.cactus1];
+  const sp = sps[0];
+  const extras = sps.slice(1).map((s2, i) => ({ sp: s2, x: W + 40 + i * (sw(sp) + 8), w: sw(s2), h: sh(s2) }));
+  return {
+    sp, x: W + 40, y: GROUND_Y - sh(sp), w: sw(sp), h: sh(sp),
+    mul: 1, extra: extras.length ? extras : null
+  };
+}
+
+// ---------- Particles ----------
+function dust(x, y, n = 7) {
+  for (let i = 0; i < n; i++) {
+    particles.push({
+      x, y, vx: -(Math.random() * 2.6 + 0.8), vy: -(Math.random() * 2 + 0.4),
+      life: 18 + Math.random() * 16, max: 34, s: 2 + Math.random() * 3
+    });
+  }
+}
+function stepParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.14; p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+// ---------- Input ----------
+function jump() {
+  if (state === 'ready' || state === 'crashed') { reset(); return; }
+  if (state !== 'playing') return;
+  if (dino.onGround) {
+    dino.vy = -13.2; dino.onGround = false; dino.ducking = false;
+    dust(dino.x + 14, GROUND_Y - 3, 6);
+    sfx.jump();
+  }
+}
+function duck(on) {
+  if (state !== 'playing') return;
+  const want = on && dino.onGround;
+  if (want !== dino.ducking) { dino.ducking = want; if (want) sfx.duck(); }
+}
+function togglePause() {
+  if (state === 'playing') state = 'paused';
+  else if (state === 'paused') state = 'playing';
+}
+
+addEventListener('keydown', e => {
+  const k = e.code;
+  if (k === 'Space' || k === 'ArrowUp' || k === 'KeyW') { e.preventDefault(); jump(); }
+  else if (k === 'ArrowDown' || k === 'KeyS') { e.preventDefault(); duck(true); }
+  else if (k === 'KeyP') { e.preventDefault(); togglePause(); }
+});
+addEventListener('keyup', e => {
+  if (e.code === 'ArrowDown' || e.code === 'KeyS') duck(false);
+});
+canvas.addEventListener('mousedown', e => { e.preventDefault(); jump(); });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('touchstart', e => { e.preventDefault(); jump(); }, { passive: false });
+canvas.addEventListener('touchmove', e => { e.preventDefault(); duck(true); }, { passive: false });
+canvas.addEventListener('touchend', e => { e.preventDefault(); duck(false); }, { passive: false });
+
+const pad = (id, on, off) => {
+  const el = document.getElementById(id);
+  el.addEventListener('touchstart', e => { e.preventDefault(); on(); }, { passive: false });
+  el.addEventListener('touchend', e => { e.preventDefault(); off && off(); }, { passive: false });
+  el.addEventListener('mousedown', e => { e.preventDefault(); on(); });
+  el.addEventListener('mouseup', e => { e.preventDefault(); off && off(); });
+  el.addEventListener('mouseleave', () => off && off());
+};
+pad('padJump', jump);
+pad('padDuck', () => duck(true), () => duck(false));
+
+const btnStart = document.getElementById('btnStart');
+const btnPause = document.getElementById('btnPause');
+const btnSound = document.getElementById('btnSound');
+const btnTheme = document.getElementById('btnTheme');
+const padDuckEl = document.getElementById('padDuck');
+const padJumpEl = document.getElementById('padJump');
+
+function setLabel(el, txt) { el.textContent = txt; }
+
+btnStart.onclick = () => reset();
+btnPause.onclick = togglePause;
+btnSound.onclick = () => {
+  soundOn = !soundOn; store.set('dino.sound', soundOn);
+  setLabel(btnSound, 'SOUND: ' + (soundOn ? 'ON' : 'OFF'));
+  if (soundOn) sfx.score();
+};
+btnTheme.onclick = () => {
+  themeDark = !themeDark; store.set('dino.dark', themeDark); applyTheme();
+};
+function applyTheme() {
+  document.body.classList.toggle('dark', themeDark);
+  setLabel(btnTheme, 'THEME: ' + (themeDark ? 'DARK' : 'LIGHT'));
+}
+setLabel(btnSound, 'SOUND: ' + (soundOn ? 'ON' : 'OFF'));
+applyTheme();
+
+// ---------- Offline / install (PWA) ----------
+const btnInstall = document.getElementById('btnInstall');
+const sheet = document.getElementById('sheet');
+let deferredPrompt = null;
+
+addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredPrompt = e;
+  btnInstall.classList.add('ready');
+  btnInstall.textContent = 'INSTALL APP';
+});
+btnInstall.onclick = async () => {
+  if (deferredPrompt) {
+    deferredPrompt.prompt();
+    const r = await deferredPrompt.userChoice.catch(() => null);
+    if (r && r.outcome === 'accepted') btnInstall.textContent = 'INSTALLED ✓';
+    deferredPrompt = null;
+    return;
+  }
+  sheet.classList.add('show');
+};
+document.getElementById('sheetClose').onclick = () => sheet.classList.remove('show');
+sheet.onclick = e => { if (e.target === sheet) sheet.classList.remove('show'); };
+if (matchMedia('(display-mode: standalone)').matches || navigator.standalone) {
+  btnInstall.textContent = 'INSTALLED ✓';
+  btnInstall.disabled = true;
+}
+addEventListener('appinstalled', () => { btnInstall.textContent = 'INSTALLED ✓'; btnInstall.classList.remove('ready'); });
+
+if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) {
+  addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW failed', e));
+  });
+}
+addEventListener('blur', () => { if (state === 'playing') state = 'paused'; });
+
+// ---------- Collision ----------
+const hit = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
+function crash() {
+  state = 'crashed';
+  dust(dino.x + 20, GROUND_Y - 24, 16, true);
+  dust(dino.x + 20, GROUND_Y - 12, 12, true);
+  sfx.crash();
+  if (Math.floor(score) > best) { best = Math.floor(score); store.set('dino.best', best); }
+}
+
+// ---------- Update ----------
+function update() {
+  frame++;
+  if (state === 'paused' || state === 'ready') { stepParticles(); return; }
+
+  if (state === 'crashed') {
+    dino.vy += 0.6;
+    dino.y = Math.min(dino.y + dino.vy, GROUND_Y - dino.h);
+    stepParticles();
+    return;
+  }
+
+  speed = Math.min(19, 6.5 + distance / 900);
+  distance += speed * 0.5;
+  score = distance;
+  const milestone = Math.floor(score / 100);
+  if (milestone !== lastMilestone) { lastMilestone = milestone; if (milestone > 0) sfx.score(); }
+
+  // physics
+  dino.vy += 0.62;
+  dino.y += dino.vy;
+  const nh = dino.ducking ? sh(S.duck) : sh(S.idle);
+  if (dino.y + nh >= GROUND_Y) {
+    if (!dino.onGround) dust(dino.x + 14, GROUND_Y - 3, 8);
+    dino.y = GROUND_Y - nh; dino.vy = 0; dino.onGround = true;
+  } else dino.onGround = false;
+  if (dino.ducking && !dino.onGround) dino.ducking = false;
+  dino.h = nh;
+  if (dino.onGround && frame % 7 === 0) dust(dino.x + 4, GROUND_Y - 2, 2);
+
+  // clouds
+  for (const c of clouds) {
+    c.x -= c.v;
+    if (c.x < -40) { c.x = W + Math.random() * 120; c.y = 18 + Math.random() * 80; }
+  }
+
+  // rain
+  stepRain(state === 'playing' ? 1 + speed / 20 : 1);
+
+  // spawn
+  const last = obstacles[obstacles.length - 1];
+  const gap = 210 + Math.random() * 260 - Math.min(90, distance / 30);
+  if (!last || last.x + last.w < W - gap) obstacles.push(makeObstacle());
+
+  // move + collide
+  const box = {
+    x: dino.x + (dino.ducking ? 3 : 5) * SCALE,
+    y: dino.y + (dino.ducking ? 7 : 3) * SCALE,
+    w: (dino.ducking ? 15 : 10) * SCALE,
+    h: dino.h - (dino.ducking ? 10 : 6) * SCALE
+  };
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    const o = obstacles[i];
+    o.x -= speed * o.mul;
+    if (o.bird && o.vy) { o.y += o.vy; if (o.y < GROUND_Y - 150) o.vy *= -1; if (o.y > GROUND_Y - 52) o.vy *= -1; }
+    if (o.extra && o.extra.length) for (const e of o.extra) e.x -= speed * o.mul;
+    const right = (o.extra && o.extra.length) ? o.extra[o.extra.length - 1].x + o.extra[o.extra.length - 1].w : o.x + o.w;
+    if (right < -30) { obstacles.splice(i, 1); continue; }
+    if (hit(box, o)) { crash(); return; }
+    if (o.extra && o.extra.length) for (const e of o.extra) if (hit(box, e)) { crash(); return; }
+  }
+
+  stepParticles();
+}
+
+// ---------- Render ----------
+function render() {
+  const ink = BLACK;
+
+  // ---- morning sky (always morning) ----
+  const sky = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+  sky.addColorStop(0, 'rgb(58,150,226)');
+  sky.addColorStop(0.42, 'rgb(126,206,240)');
+  sky.addColorStop(0.84, 'rgb(255,219,158)');
+  sky.addColorStop(1, 'rgb(255,201,124)');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  // ---- sun + soft glow ----
+  const sunX = W - 105, sunY = 62;
+  const glow = ctx.createRadialGradient(sunX, sunY, 6, sunX, sunY, 135);
+  glow.addColorStop(0, 'rgba(255,247,206,0.60)');
+  glow.addColorStop(1, 'rgba(255,247,206,0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(sunX - 145, sunY - 145, 290, 290);
+  ctx.fillStyle = 'rgba(255,206,74,0.95)';
+  ctx.beginPath(); ctx.arc(sunX, sunY, 23, 0, Math.PI * 2); ctx.fill();
+
+  // ---- hills: soft colours so obstacles always read clearly ----
+  ctx.globalAlpha = 0.55;
+  drawHills(HILL_FAR, (distance * 0.26) % TILE, 'rgb(150,196,226)');
+  ctx.globalAlpha = 0.62;
+  drawHills(HILL_MID, (distance * 0.46) % TILE, 'rgb(122,198,150)');
+  ctx.globalAlpha = 0.70;
+  drawHills(HILL_NEAR, (distance * 0.72) % TILE, 'rgb(96,182,130)');
+
+  // ---- haze above ground = depth + readability ----
+  const haze = ctx.createLinearGradient(0, GROUND_Y - 100, 0, GROUND_Y);
+  haze.addColorStop(0, 'rgba(255,255,255,0)');
+  haze.addColorStop(1, 'rgba(255,255,255,0.45)');
+  ctx.fillStyle = haze;
+  ctx.fillRect(0, GROUND_Y - 100, W, 100);
+  ctx.globalAlpha = 1;
+
+  // ---- clouds ----
+  ctx.globalAlpha = 0.5;
+  ctx.fillStyle = '#ffffff';
+  for (const c of clouds) drawSprite(c.sp, c.x, c.y, c.s);
+  ctx.globalAlpha = 1;
+
+
+  // rain (behind gameplay)
+  ctx.fillStyle = ink;
+  drawRain('far', 0.30, 'rgba(210,240,255,1)');
+  ctx.fillStyle = ink;
+
+  // ground: grass strip + soil
+  const grass = ctx.createLinearGradient(0, GROUND_Y, 0, GROUND_Y + 22);
+  grass.addColorStop(0, 'rgb(150,214,140)');
+  grass.addColorStop(1, 'rgb(94,176,112)');
+  ctx.fillStyle = grass;
+  ctx.fillRect(0, GROUND_Y, W, 24);
+  ctx.fillStyle = 'rgb(196,150,96)';
+  ctx.fillRect(0, GROUND_Y + 24, W, H - GROUND_Y - 24);
+  ctx.fillStyle = ink;
+  ctx.fillRect(0, GROUND_Y - 3, W, 3);
+  const off = (distance * 2) % 44;
+  for (let x = -44 + off; x < W; x += 44) {
+    ctx.fillStyle = 'rgba(255,255,255,0.20)';
+    ctx.fillRect(x, GROUND_Y + 14, 26, 3);
+  }
+  ctx.fillStyle = ink;
+
+  // obstacles: ground shadow, then white halo, then dark body -> always visible
+  ctx.fillStyle = 'rgba(20,40,30,0.20)';
+  for (const o of obstacles) {
+    if (o.bird) continue;
+    ctx.fillRect(o.x + 3, GROUND_Y + 2, o.w - 6, 5);
+    if (o.extra && o.extra.length) for (const e of o.extra) ctx.fillRect(e.x + 3, GROUND_Y + 2, e.w - 6, 5);
+  }
+  for (const o of obstacles) {
+    if (o.extra && o.extra.length) for (const e of o.extra) drawSprite(e.sp, e.x, GROUND_Y - e.h, SCALE, BLACK);
+    drawSprite(o.sp, o.x, o.y, SCALE, BLACK);
+  }
+
+  // dino
+  const sp = dino.ducking ? S.duck : (!dino.onGround ? S.jump : S.idle);
+  if (state === 'crashed') {
+    ctx.save();
+    ctx.translate(dino.x + 20, dino.y + dino.h - 8); ctx.rotate(-0.3); ctx.translate(-(dino.x + 20), -(dino.y + dino.h - 8));
+    drawSprite(sp, dino.x, dino.y, SCALE, BLACK);
+    ctx.restore();
+  } else drawSprite(sp, dino.x, dino.y, SCALE, BLACK);
+
+  // particles
+  for (const p of particles) {
+    ctx.globalAlpha = Math.max(0, p.life / p.max) * 0.5;
+    ctx.fillStyle = '#3c4a56';
+    ctx.fillRect(p.x, p.y, p.s, p.s);
+  }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = ink;
+
+  // rain (front layer, depth)
+  drawRain('near', 0.38, 'rgba(235,250,255,1)');
+  ctx.fillStyle = ink;
+
+  // HUD
+  ctx.font = 'bold 16px "Courier New", monospace';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+  const pad5 = n => String(Math.floor(n)).padStart(5, '0');
+  ctx.fillText(pad5(score), W - 130, 16);
+  ctx.font = '13px "Courier New", monospace';
+  ctx.fillText('HI ' + pad5(best), W - 130, 40);
+  ctx.textAlign = 'left';
+
+  // overlays
+  if (state !== 'playing') {
+    ctx.fillStyle = themeDark ? 'rgba(13,17,23,.72)' : 'rgba(255,255,255,.74)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = ink;
+    const title = state === 'ready' ? 'DINO RUNNER'
+      : state === 'paused' ? 'PAUSED'
+      : state === 'crashed' ? 'GAME OVER' : '';
+    ctx.font = 'bold 34px "Courier New", monospace';
+    ctx.fillText(title, W / 2, H / 2 - 54);
+    ctx.font = '15px "Courier New", monospace';
+    if (state === 'crashed') {
+      ctx.fillText('SCORE ' + Math.floor(score) + '   BEST ' + best, W / 2, H / 2 + 2);
+      if (Math.floor(score) >= best && score > 0) ctx.fillText('*** NEW HIGH SCORE! ***', W / 2, H / 2 + 26);
+    }
+    ctx.font = '13px "Courier New", monospace';
+    ctx.fillText(state === 'crashed' ? 'PRESS SPACE OR TAP TO RETRY' : 'PRESS SPACE / TAP TO JUMP', W / 2, H / 2 + 52);
+    ctx.textAlign = 'left';
+  }
+}
+
+// ---------- Loop ----------
+const FPS = 60;
+let acc = 0, last = performance.now();
+function loop(now) {
+  try {
+    const dt = Math.min(now - last, 100); last = now;
+    acc += dt;
+    while (acc >= 1000 / FPS) { update(); acc -= 1000 / FPS; }
+    render();
+  } catch (e) {
+    console.error('loop error', e);
+  }
+  requestAnimationFrame(loop);
+}
+
+reset(false);
+state = 'ready';
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
